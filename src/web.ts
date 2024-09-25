@@ -1,13 +1,33 @@
 import { WebPlugin } from '@capacitor/core';
 
-import type { HtmlToPdfSaverPlugin } from './definitions';
+import type { HtmlToPdfSaverPlugin, PrinterResponse } from './definitions';
 
 export class HtmlToPdfSaverWeb
   extends WebPlugin
   implements HtmlToPdfSaverPlugin
 {
-  async echo(options: { value: string }): Promise<{ value: string }> {
-    console.log('ECHO', options);
-    return options;
+  async printWebPage(options: {
+    content: string;
+    isHtml: boolean;
+  }): Promise<PrinterResponse> {
+    console.warn(
+      'printWebPage is not supported on the web platform.',
+      options.content,
+      options.isHtml,
+    );
+
+    return { ok: false };
+  }
+
+  async printWebPageUsingSilentPrinter(options: {
+    content: string;
+    isHtml: boolean;
+  }): Promise<PrinterResponse> {
+    console.warn(
+      'printWebPageUsingSilentPrinter is not supported on the web platform.',
+      options.content,
+      options.isHtml,
+    );
+    return { ok: false };
   }
 }

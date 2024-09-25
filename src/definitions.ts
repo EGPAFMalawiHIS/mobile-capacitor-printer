@@ -1,3 +1,10 @@
+type PrinterOptions = { content: string; isHtml: boolean };
+
+export type PrinterResponse = { ok: boolean };
 export interface HtmlToPdfSaverPlugin {
-  echo(options: { value: string }): Promise<{ value: string }>;
+  printWebPage(options: PrinterOptions): Promise<PrinterResponse>;
+
+  printWebPageUsingSilentPrinter(
+    options: PrinterOptions,
+  ): Promise<PrinterResponse>;
 }
