@@ -4,8 +4,7 @@ import type { HtmlToPdfSaverPlugin, PrinterResponse } from './definitions';
 
 export class HtmlToPdfSaverWeb
   extends WebPlugin
-  implements HtmlToPdfSaverPlugin
-{
+  implements HtmlToPdfSaverPlugin {
   async printWebPage(options: {
     content: string;
     isHtml: boolean;
@@ -29,5 +28,29 @@ export class HtmlToPdfSaverWeb
       options.isHtml,
     );
     return { ok: false };
+  }
+
+  async printWebPageToNetworkPrinter(options: {
+    content: string;
+    printerIp: string;
+    printerPort: number
+  }): Promise<PrinterResponse> {
+
+    console.warn(
+      'printWebPageUsingSilentPrinter is not supported on the web platform.',
+      options.content,
+      options.printerIp,
+      options.printerPort,
+    );
+
+    return { ok: false }
+  }
+
+  async checkNetworkStatus(): Promise<{ wifiConnected: boolean; vpnActive: boolean; status: boolean }> {
+    return {
+      wifiConnected: false,
+      vpnActive: false,
+      status: false
+    }
   }
 }

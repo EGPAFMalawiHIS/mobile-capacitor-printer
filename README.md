@@ -15,6 +15,8 @@ npx cap sync
 
 * [`printWebPage(...)`](#printwebpage)
 * [`printWebPageUsingSilentPrinter(...)`](#printwebpageusingsilentprinter)
+* [`printWebPageToNetworkPrinter(...)`](#printwebpagetonetworkprinter)
+* [`checkNetworkStatus()`](#checknetworkstatus)
 * [Type Aliases](#type-aliases)
 
 </docgen-index>
@@ -48,6 +50,32 @@ printWebPageUsingSilentPrinter(options: PrinterOptions) => Promise<PrinterRespon
 | **`options`** | <code><a href="#printeroptions">PrinterOptions</a></code> |
 
 **Returns:** <code>Promise&lt;<a href="#printerresponse">PrinterResponse</a>&gt;</code>
+
+--------------------
+
+
+### printWebPageToNetworkPrinter(...)
+
+```typescript
+printWebPageToNetworkPrinter(options: { content: string; printerIp: string; printerPort: number; }) => Promise<PrinterResponse>
+```
+
+| Param         | Type                                                                      |
+| ------------- | ------------------------------------------------------------------------- |
+| **`options`** | <code>{ content: string; printerIp: string; printerPort: number; }</code> |
+
+**Returns:** <code>Promise&lt;<a href="#printerresponse">PrinterResponse</a>&gt;</code>
+
+--------------------
+
+
+### checkNetworkStatus()
+
+```typescript
+checkNetworkStatus() => Promise<{ wifiConnected: boolean; vpnActive: boolean; status: boolean; }>
+```
+
+**Returns:** <code>Promise&lt;{ wifiConnected: boolean; vpnActive: boolean; status: boolean; }&gt;</code>
 
 --------------------
 

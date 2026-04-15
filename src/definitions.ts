@@ -7,4 +7,12 @@ export interface HtmlToPdfSaverPlugin {
   printWebPageUsingSilentPrinter(
     options: PrinterOptions,
   ): Promise<PrinterResponse>;
+
+  printWebPageToNetworkPrinter(options: {
+    content: string;
+    printerIp: string;
+    printerPort: number
+  }): Promise<PrinterResponse>
+
+  checkNetworkStatus(): Promise<{ wifiConnected: boolean; vpnActive: boolean; status: boolean }>
 }

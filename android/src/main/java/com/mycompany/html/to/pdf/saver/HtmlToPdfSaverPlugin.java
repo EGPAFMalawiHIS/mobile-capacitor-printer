@@ -1,17 +1,11 @@
 package com.mycompany.html.to.pdf.saver;
 
 import android.Manifest;
-import android.app.PendingIntent;
-import android.content.BroadcastReceiver;
 import android.content.Context;
-import android.content.Intent;
-import android.content.IntentFilter;
-import android.hardware.usb.UsbConstants;
-import android.hardware.usb.UsbDevice;
-import android.hardware.usb.UsbDeviceConnection;
-import android.hardware.usb.UsbEndpoint;
-import android.hardware.usb.UsbInterface;
-import android.hardware.usb.UsbManager;
+import android.net.ConnectivityManager;
+import android.net.Network;
+import android.net.NetworkCapabilities;
+import android.net.wifi.WifiManager;
 import android.os.Build;
 import android.os.Bundle;
 import android.os.CancellationSignal;
@@ -20,11 +14,8 @@ import android.print.PageRange;
 import android.print.PrintAttributes;
 import android.print.PrintDocumentAdapter;
 import android.print.PrintManager;
-import android.util.Log;
 import android.webkit.WebView;
 import android.webkit.WebViewClient;
-
-import androidx.annotation.RequiresApi;
 
 import com.getcapacitor.Plugin;
 import com.getcapacitor.PluginCall;
@@ -32,45 +23,48 @@ import com.getcapacitor.PluginMethod;
 import com.getcapacitor.annotation.CapacitorPlugin;
 import com.getcapacitor.annotation.Permission;
 
+import java.io.BufferedReader;
 import java.io.ByteArrayOutputStream;
+import java.io.FileReader;
 import java.io.IOException;
-import java.util.HashMap;
+import java.io.OutputStream;
+import java.lang.reflect.Method;
+import java.net.Inet4Address;
+import java.net.InetAddress;
+import java.net.InetSocketAddress;
+import java.net.NetworkInterface;
+import java.net.Socket;
+import java.util.ArrayList;
+import java.util.Enumeration;
+import java.util.List;
 import java.util.Objects;
 
 @CapacitorPlugin(
         name = "HtmlToPdfSaver",
         permissions = {
-            @Permission(alias = "internet", strings = { Manifest.permission.INTERNET }),
-            @Permission(alias = "storage", strings = {
-                    Manifest.permission.READ_EXTERNAL_STORAGE,
-                    Manifest.permission.WRITE_EXTERNAL_STORAGE
-            }),
-    }
+                @Permission(alias = "internet", strings = {Manifest.permission.INTERNET}),
+                @Permission(alias = "storage", strings = {
+                        Manifest.permission.READ_EXTERNAL_STORAGE,
+                        Manifest.permission.WRITE_EXTERNAL_STORAGE
+                }),
+                @Permission(alias = "network", strings = {
+                        Manifest.permission.ACCESS_NETWORK_STATE,
+                        Manifest.permission.ACCESS_WIFI_STATE,
+                        Manifest.permission.ACCESS_FINE_LOCATION
+                })
+        }
 )
 public class HtmlToPdfSaverPlugin extends Plugin {
 
     private PluginCall savedCall;
-    private UsbManager usbManager;
-    private PendingIntent permissionIntent;
-    private static final String ACTION_USB_PERMISSION = "com.mycompany.html.to.pdf.saver.USB_PERMISSION";
+    private ConnectivityManager connectivityManager;
+    private WifiManager wifiManager;
 
-    @RequiresApi(api = Build.VERSION_CODES.TIRAMISU)
     @Override
     public void load() {
         super.load();
-        usbManager = (UsbManager) getContext().getSystemService(Context.USB_SERVICE);
-
-        permissionIntent = PendingIntent.getBroadcast(
-                getContext(),
-                0,
-                new Intent(ACTION_USB_PERMISSION),
-                PendingIntent.FLAG_NO_CREATE | PendingIntent.FLAG_IMMUTABLE
-        );
-
-        IntentFilter filter = new IntentFilter(ACTION_USB_PERMISSION);
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
-            getContext().registerReceiver(usbReceiver, filter, Context.RECEIVER_EXPORTED);
-        }
+        connectivityManager = (ConnectivityManager) getContext().getSystemService(Context.CONNECTIVITY_SERVICE);
+        wifiManager = (WifiManager) getContext().getApplicationContext().getSystemService(Context.WIFI_SERVICE);
     }
 
     @PluginMethod
@@ -91,7 +85,6 @@ public class HtmlToPdfSaverPlugin extends Plugin {
                     PrintManager printManager = (PrintManager) getContext().getSystemService(Context.PRINT_SERVICE);
 
                     PrintAttributes.Builder builder = new PrintAttributes.Builder();
-
                     builder.setMediaSize(PrintAttributes.MediaSize.ISO_A5);
 
                     PrintDocumentAdapter printAdapter = view.createPrintDocumentAdapter(jobName);
@@ -111,7 +104,6 @@ public class HtmlToPdfSaverPlugin extends Plugin {
                             }
 
                             builder.setMediaSize(PrintAttributes.MediaSize.ISO_A5);
-
                             printAdapter.onLayout(oldAttributes, builder.build(), cancellationSignal, callback, extras);
                         }
 
@@ -128,7 +120,6 @@ public class HtmlToPdfSaverPlugin extends Plugin {
                     };
 
                     printManager.print(jobName, wrapper, builder.build());
-
                     call.resolve();
                 }
             });
@@ -138,97 +129,253 @@ public class HtmlToPdfSaverPlugin extends Plugin {
     }
 
     @PluginMethod
-    public void printWebPageUsingSilentPrinter(PluginCall call) {
+    public void printWebPageToNetworkPrinter(PluginCall call) {
+        String content = call.getString("content");
+        String printerIp = call.getString("printerIp");
+        Integer printerPort = call.getInt("printerPort", 9100);
+
+        if (content == null) {
+            call.reject("Must provide content to print");
+            return;
+        }
+
+        if (printerIp == null) {
+            call.reject("Must provide printer IP address");
+            return;
+        }
+
+        savedCall = call;
+
+        // Try to print regardless of hotspot detection
+        // The connection attempt will fail if printer is not reachable
+        performHotspotPrinting(printerIp, printerPort, content);
+    }
+
+    @PluginMethod
+    public void discoverHotspotDevices(PluginCall call) {
+        // Scan for devices connected to the phone's hotspot
+        new Thread(() -> {
+            try {
+                List<String> connectedDevices = getConnectedHotspotDevices();
+
+                com.getcapacitor.JSObject result = new com.getcapacitor.JSObject();
+                result.put("devices", new com.getcapacitor.JSArray(connectedDevices));
+                result.put("count", connectedDevices.size());
+                result.put("hotspotIp", getHotspotIpAddress());
+
+                call.resolve(result);
+            } catch (Exception e) {
+                call.reject("Error discovering devices: " + e.getMessage());
+            }
+        }).start();
+    }
+
+    @PluginMethod
+    public void checkNetworkStatus(PluginCall call) {
+        boolean cellularConnected = isCellularConnected();
+        boolean vpnActive = isVpnActive();
+        boolean hotspotEnabled = isHotspotEnabled();
+        String hotspotIp = getHotspotIpAddress();
+
+        String status = "Cellular: " + cellularConnected +
+                ", VPN: " + vpnActive +
+                ", Hotspot: " + hotspotEnabled +
+                ", Hotspot IP: " + hotspotIp;
+
+        call.resolve(new com.getcapacitor.JSObject()
+                .put("cellularConnected", cellularConnected)
+                .put("vpnActive", vpnActive)
+                .put("hotspotEnabled", hotspotEnabled)
+                .put("hotspotIp", hotspotIp)
+                .put("status", status)
+                .put("canPrint", true) // Always allow printing attempt
+                .put("canAccessApi", cellularConnected));
+    }
+
+    private boolean isCellularConnected() {
+        if (connectivityManager == null) return false;
+
+        Network[] networks = connectivityManager.getAllNetworks();
+        for (Network network : networks) {
+            NetworkCapabilities caps = connectivityManager.getNetworkCapabilities(network);
+            if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_CELLULAR)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isVpnActive() {
+        if (connectivityManager == null) return false;
+
+        Network[] networks = connectivityManager.getAllNetworks();
+        for (Network network : networks) {
+            NetworkCapabilities caps = connectivityManager.getNetworkCapabilities(network);
+            if (caps != null && caps.hasTransport(NetworkCapabilities.TRANSPORT_VPN)) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    private boolean isHotspotEnabled() {
+        if (wifiManager == null) return false;
+
         try {
-            String content = call.getString("content");
-
-            if (content == null) {
-                call.reject("Must provide content to print");
-                return;
+            // Method 1: Check using reflection (more reliable)
+            if (isHotspotEnabledReflection()) {
+                return true;
             }
 
-            savedCall = call;
-
-            HashMap<String, UsbDevice> deviceList = usbManager.getDeviceList();
-            if (deviceList.isEmpty()) {
-                call.reject("No USB devices found");
-                return;
-            }
-
-            UsbDevice device = deviceList.values().iterator().next();
-
-            if (usbManager.hasPermission(device)) {
-                performPrinting(device, content);
-            } else {
-                usbManager.requestPermission(device, permissionIntent);
-            }
+            // Method 2: Check hotspot IP
+            String hotspotIp = getHotspotIpAddress();
+            return hotspotIp != null && !hotspotIp.equals("Not Available");
         } catch (Exception e) {
-            savedCall.reject(String.valueOf(e));
+            return false;
         }
     }
 
-    private final BroadcastReceiver usbReceiver = new BroadcastReceiver() {
-        public void onReceive(Context context, Intent intent) {
-            String action = intent.getAction();
-            if (ACTION_USB_PERMISSION.equals(action)) {
-                synchronized (this) {
-                    UsbDevice device = intent.getParcelableExtra(UsbManager.EXTRA_DEVICE);
-                    if (intent.getBooleanExtra(UsbManager.EXTRA_PERMISSION_GRANTED, false)) {
-                        if (device != null) {
-                            performPrinting(device, savedCall.getString("content"));
-                        }
-                    } else {
-                        savedCall.reject("USB permission denied");
-                    }
-                }
-            }
-        }
-    };
-
-    private void performPrinting(UsbDevice device, String content) {
+    private boolean isHotspotEnabledReflection() {
         try {
-            UsbDeviceConnection connection = usbManager.openDevice(device);
-            if (connection != null) {
-                UsbEndpoint printEndpoint = null;
-                UsbInterface printInterface = null;
+            Method method = wifiManager.getClass().getDeclaredMethod("isWifiApEnabled");
+            method.setAccessible(true);
+            return (Boolean) method.invoke(wifiManager);
+        } catch (Exception e) {
+            // Fall back to other methods
+            return false;
+        }
+    }
 
-                for (int i = 0; i < device.getInterfaceCount(); i++) {
-                    UsbInterface usbInterface = device.getInterface(i);
-                    for (int j = 0; j < usbInterface.getEndpointCount(); j++) {
-                        UsbEndpoint ep = usbInterface.getEndpoint(j);
-                        if (ep.getType() == UsbConstants.USB_ENDPOINT_XFER_BULK && ep.getDirection() == UsbConstants.USB_DIR_OUT) {
-                            printInterface = usbInterface;
-                            printEndpoint = ep;
-                            break;
+    private String getHotspotIpAddress() {
+        try {
+            // Common hotspot interface names and IP ranges
+            String[] hotspotInterfaces = {"ap0", "wlan0", "wlan1", "softap0", "swlan0", "p2p0"};
+            String[] hotspotRanges = {"192.168.43.", "192.168.44.", "192.168.49.", "192.168.173.", "192.168.1."};
+
+            Enumeration<NetworkInterface> interfaces = NetworkInterface.getNetworkInterfaces();
+            while (interfaces.hasMoreElements()) {
+                NetworkInterface networkInterface = interfaces.nextElement();
+                String interfaceName = networkInterface.getName().toLowerCase();
+
+                // Check if this interface might be a hotspot
+                boolean isHotspotInterface = false;
+                for (String hotspotIf : hotspotInterfaces) {
+                    if (interfaceName.contains(hotspotIf) || interfaceName.contains("ap")) {
+                        isHotspotInterface = true;
+                        break;
+                    }
+                }
+
+                if (isHotspotInterface) {
+                    Enumeration<InetAddress> addresses = networkInterface.getInetAddresses();
+                    while (addresses.hasMoreElements()) {
+                        InetAddress address = addresses.nextElement();
+                        if (!address.isLoopbackAddress() && address instanceof Inet4Address) {
+                            String ip = address.getHostAddress();
+
+                            // Check if IP is in typical hotspot ranges
+                            for (String range : hotspotRanges) {
+                                if (ip.startsWith(range)) {
+                                    return ip;
+                                }
+                            }
+
+                            // If we found an IP on a hotspot interface, return it even if not in typical range
+                            return ip;
                         }
                     }
-                    if (printInterface != null) break;
                 }
-
-                if (printInterface == null) {
-                    savedCall.reject("Printer does not have a suitable bulk OUT endpoint.");
-                    return;
-                }
-
-                connection.claimInterface(printInterface, true);
-
-                byte[] printData = convertToPCL(content);
-                int bytesTransferred = connection.bulkTransfer(printEndpoint, printData, printData.length, 5000);
-
-                connection.releaseInterface(printInterface);
-                connection.close();
-
-                if (bytesTransferred == printData.length) {
-                    savedCall.resolve();
-                } else {
-                    savedCall.reject("Failed to send all data to printer. Please check your connection and try again.");
-                }
-            } else {
-                savedCall.reject("Failed to open USB connection. Please ensure the printer is properly connected and powered on.");
             }
         } catch (Exception e) {
-            savedCall.reject("performPrinting: " + e.getMessage());
+            e.printStackTrace();
         }
+        return "Not Available";
+    }
+
+    private List<String> getConnectedHotspotDevices() {
+        List<String> devices = new ArrayList<>();
+
+        try {
+            // Read ARP cache to find connected devices
+            BufferedReader reader = new BufferedReader(new FileReader("/proc/net/arp"));
+            String line;
+            reader.readLine(); // Skip header
+
+            while ((line = reader.readLine()) != null) {
+                String[] parts = line.split("\\s+");
+
+                if (parts.length >= 4) {
+                    String ip = parts[0];
+                    String mac = parts[3];
+                    String flags = parts[2];
+
+                    // Skip invalid entries
+                    if (mac.matches("([0-9A-Fa-f]{2}:){5}[0-9A-Fa-f]{2}") &&
+                            !mac.equals("00:00:00:00:00:00") &&
+                            !flags.equals("0x0")) {
+
+                        // Filter by common hotspot IP ranges
+                        if (ip.startsWith("192.168.43.") || ip.startsWith("192.168.44.") ||
+                                ip.startsWith("192.168.49.") || ip.startsWith("192.168.173.")) {
+                            devices.add(ip + " (" + mac + ")");
+                        }
+                    }
+                }
+            }
+            reader.close();
+        } catch (Exception e) {
+            e.printStackTrace();
+        }
+
+        return devices;
+    }
+
+    private void performHotspotPrinting(String printerIp, int printerPort, String content) {
+        new Thread(() -> {
+            Socket socket = null;
+            try {
+                socket = new Socket();
+
+                // Connect to printer with timeout
+                socket.connect(new InetSocketAddress(printerIp, printerPort), 5000);
+
+                OutputStream outputStream = socket.getOutputStream();
+
+                // Convert content to printer format (PCL)
+                byte[] printData = convertToPCL(content);
+
+                // Send data to printer
+                outputStream.write(printData);
+                outputStream.flush();
+
+                // Wait for printer to process
+                Thread.sleep(500);
+
+                savedCall.resolve(new com.getcapacitor.JSObject()
+                        .put("success", true)
+                        .put("message", "Print job sent successfully to " + printerIp)
+                        .put("bytesTransferred", printData.length));
+
+            } catch (IOException e) {
+                String errorMessage = "Failed to connect to printer at " + printerIp + ":" + printerPort +
+                        ". Make sure:\n" +
+                        "1. Printer is connected to your phone's hotspot\n" +
+                        "2. Printer IP is correct\n" +
+                        "3. Printer is powered on\n" +
+                        "Error: " + e.getMessage();
+                savedCall.reject(errorMessage);
+            } catch (InterruptedException e) {
+                savedCall.reject("Print operation interrupted: " + e.getMessage());
+            } finally {
+                if (socket != null && !socket.isClosed()) {
+                    try {
+                        socket.close();
+                    } catch (IOException e) {
+                        e.printStackTrace();
+                    }
+                }
+            }
+        }).start();
     }
 
     private byte[] convertToPCL(String content) {
@@ -242,13 +389,12 @@ public class HtmlToPdfSaverPlugin extends Plugin {
 
             // Basic printer initialization commands
             output.write("\u001BE".getBytes()); // Printer reset
-
             output.write("\u001B&l25A".getBytes()); // Set page size to A5
             output.write("\u001B&l0O".getBytes()); // Set orientation to portrait
             output.write("\u001B&l1E".getBytes()); // Set top margin
-            output.write("\u001B&a5L".getBytes()); // Set left margin (slightly smaller for A5)
-            output.write("\u001B&l8D".getBytes()); // Set line spacing to 8 lines per inch (for better fit on A5)
-            output.write("\u001B(s0p10h12V".getBytes()); // Set font (Courier, 12cpi, 10-point for better fit on A5)
+            output.write("\u001B&a5L".getBytes()); // Set left margin
+            output.write("\u001B&l8D".getBytes()); // Set line spacing to 8 lines per inch
+            output.write("\u001B(s0p10h12V".getBytes()); // Set font
 
             // Insert plain text content
             output.write(plainTextContent.getBytes());
@@ -257,13 +403,14 @@ public class HtmlToPdfSaverPlugin extends Plugin {
             output.write("\u000C".getBytes());
 
             // End PCL sequence
-            output.write("\u001B%-12345X".getBytes()); // UEL command to end PCL
+            output.write("\u001B%-12345X".getBytes());
         } catch (IOException e) {
             e.printStackTrace();
-            savedCall.reject("convertToPCL: " + e.getMessage());
+            if (savedCall != null) {
+                savedCall.reject("convertToPCL: " + e.getMessage());
+            }
         }
 
         return output.toByteArray();
     }
-
 }
